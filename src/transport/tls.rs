@@ -238,7 +238,21 @@ impl TlsConnection {
         custom_verifier: Option<Arc<dyn ServerCertVerifier>>,
         cancel_token: Option<CancellationToken>,
     ) -> Result<Self> {
-        let root_store = RootCertStore::empty();
+        let mut root_store = RootCertStore::empty();
+
+        match rustls_native_certs::load_native_certs() {
+            Ok(certs) => {
+                for cert in certs {
+                    // Ignore individual failures; worst case we end up with fewer roots
+                    let _ = root_store.add(cert);
+                }
+            }
+            Err(e) => {
+                // Up to you: log and continue (insecure if root_store stays empty),
+                // or turn this into an error.
+                tracing::warn!("Failed to load native certs: {:?}", e);
+            }
+        }
 
         let mut config = ClientConfig::builder()
             .with_root_certificates(root_store)
@@ -252,16 +266,16 @@ impl TlsConnection {
         }
         let connector = TlsConnector::from(Arc::new(config));
 
-        let socket_addr = match &remote_addr.addr.host {
-            rsip::host_with_port::Host::Domain(domain) => {
-                let port = remote_addr.addr.port.as_ref().map_or(5061, |p| *p.value());
-                format!("{}:{}", domain, port).parse()?
-            }
-            rsip::host_with_port::Host::IpAddr(ip) => {
-                let port = remote_addr.addr.port.as_ref().map_or(5061, |p| *p.value());
-                SocketAddr::new(*ip, port)
-            }
-        };
+        // let socket_addr = match &remote_addr.addr.host {
+        //     rsip::host_with_port::Host::Domain(domain) => {
+        //         let port = remote_addr.addr.port.as_ref().map_or(5061, |p| *p.value());
+        //         format!("{}:{}", domain, port).parse()?
+        //     }
+        //     rsip::host_with_port::Host::IpAddr(ip) => {
+        //         let port = remote_addr.addr.port.as_ref().map_or(5061, |p| *p.value());
+        //         SocketAddr::new(*ip, port)
+        //     }
+        // };
 
         let domain_string = match &remote_addr.addr.host {
             rsip::host_with_port::Host::Domain(domain) => domain.to_string(),
@@ -272,7 +286,21 @@ impl TlsConnection {
             .map_err(|_| Error::Error(format!("Invalid DNS name: {}", domain_string)))?
             .to_owned();
 
-        let stream = TcpStream::connect(socket_addr).await?;
+        // Decide port once
+        let port = remote_addr.addr.port.as_ref().map_or(5061, |p| *p.value());
+
+        // let TcpStream do DNS if host is a domain
+        let stream = match &remote_addr.addr.host {
+            rsip::host_with_port::Host::Domain(domain) => {
+                // This uses ToSocketAddrs under the hood and does DNS resolution
+                TcpStream::connect((domain.to_string(), port)).await?
+            }
+            rsip::host_with_port::Host::IpAddr(ip) => {
+                let socket_addr = SocketAddr::new(*ip, port);
+                TcpStream::connect(socket_addr).await?
+            }
+        };
+        // let stream = TcpStream::connect(socket_addr).await?;
         let local_addr = SipAddr {
             r#type: Some(rsip::transport::Transport::Tls),
             addr: stream.local_addr()?.into(),

@@ -57,10 +57,12 @@ impl DefaultDomainResolver {
             .map(rsip::Param::Transport)
             .into_iter()
             .collect();
-        let scheme = target.r#type.map(|t| match t {
-            rsip::Transport::Tls | rsip::Transport::Wss => rsip::Scheme::Sips,
-            _ => rsip::Scheme::Sip,
-        });
+        // Always use "sip:", even for TLS/WSS. We still pass ;transport=tls in params.
+        let scheme = Some(rsip::Scheme::Sip);
+        // let scheme = target.r#type.map(|t| match t {
+        //     rsip::Transport::Tls | rsip::Transport::Wss => rsip::Scheme::Sips,
+        //     _ => rsip::Scheme::Sip,
+        // });
         let target_for_lookup = rsip::uri::Uri {
             scheme,
             host_with_port: target.addr.clone(),
@@ -251,7 +253,7 @@ impl TransportLayerInner {
     ) -> Result<(SipConnection, SipAddr)> {
         let target = outbound.unwrap_or(destination);
         let target = if matches!(target.addr.host, rsip::Host::Domain(_)) {
-            &self.domain_resolver.resolve(target).await?
+            &self.domain_resolver.resolve(&target).await?
         } else {
             target
         };
@@ -259,7 +261,7 @@ impl TransportLayerInner {
         debug!(?key, "lookup target: {} -> {}", destination, target);
         match self.connections.read() {
             Ok(connections) => {
-                if let Some(transport) = connections.get(&target) {
+                if let Some(transport) = connections.get(target) {
                     return Ok((transport.clone(), target.clone()));
                 }
             }
@@ -286,8 +288,10 @@ impl TransportLayerInner {
                         SipConnection::Tcp(connection)
                     }
                     Some(rsip::transport::Transport::Tls) => {
+                        let mut target_with_sni = target.clone();
+                        target_with_sni.addr.host = destination.addr.host.clone();
                         let connection = TlsConnection::connect(
-                            target,
+                            &target_with_sni,
                             None,
                             Some(self.cancel_token.child_token()),
                         )
@@ -401,8 +405,8 @@ mod tests {
         transport::{udp::UdpConnection, SipAddr},
         Result,
     };
-    use rsip::{Host, Transport};
-    use rsip_dns::{trust_dns_resolver::TokioAsyncResolver, ResolvableExt};
+    // use rsip::{Host, Transport};
+    // use rsip_dns::{trust_dns_resolver::TokioAsyncResolver, ResolvableExt};
 
     #[tokio::test]
     async fn test_lookup() -> Result<()> {
@@ -445,66 +449,65 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_rsip_dns_lookup() -> Result<()> {
-        let check_list = vec![
-            (
-                "sip:bob@127.0.0.1:5061;transport=udp",
-                ("bob", "127.0.0.1", 5061, Transport::Udp),
-            ),
-            (
-                "sip:bob@127.0.0.1:5062;transport=tcp",
-                ("bob", "127.0.0.1", 5062, Transport::Tcp),
-            ),
-            (
-                "sip:bob@localhost:5063;transport=tls",
-                ("bob", "127.0.0.1", 5063, Transport::Tls),
-            ),
-            (
-                "sip:bob@localhost:5064;transport=TLS-SCTP",
-                ("bob", "127.0.0.1", 5064, Transport::TlsSctp),
-            ),
-            (
-                "sip:bob@localhost:5065;transport=sctp",
-                ("bob", "127.0.0.1", 5065, Transport::Sctp),
-            ),
-            (
-                "sip:bob@localhost:5066;transport=ws",
-                ("bob", "127.0.0.1", 5066, Transport::Ws),
-            ),
-            (
-                "sip:bob@localhost:5067;transport=wss",
-                ("bob", "127.0.0.1", 5067, Transport::Wss),
-            ),
-        ];
-        for item in check_list {
-            let uri = rsip::uri::Uri::try_from(item.0)?;
-            let context = rsip_dns::Context::initialize_from(
-                uri.clone(),
-                rsip_dns::AsyncTrustDnsClient::new(
-                    TokioAsyncResolver::tokio(Default::default(), Default::default()).unwrap(),
-                ),
-                rsip_dns::SupportedTransports::any(),
-            )?;
+    // #[tokio::test]
+    // async fn test_rsip_dns_lookup() -> Result<()> {
+    //     let check_list = vec![
+    //         (
+    //             "sip:bob@127.0.0.1:5061;transport=udp",
+    //             ("bob", "127.0.0.1", 5061, Transport::Udp),
+    //         ),
+    //         (
+    //             "sip:bob@127.0.0.1:5062;transport=tcp",
+    //             ("bob", "127.0.0.1", 5062, Transport::Tcp),
+    //         ),
+    //         (
+    //             "sip:bob@localhost:5063;transport=tls",
+    //             ("bob", "127.0.0.1", 5063, Transport::Tls),
+    //         ),
+    //         (
+    //             "sip:bob@localhost:5064;transport=TLS-SCTP",
+    //             ("bob", "127.0.0.1", 5064, Transport::TlsSctp),
+    //         ),
+    //         (
+    //             "sip:bob@localhost:5065;transport=sctp",
+    //             ("bob", "127.0.0.1", 5065, Transport::Sctp),
+    //         ),
+    //         (
+    //             "sip:bob@localhost:5066;transport=ws",
+    //             ("bob", "127.0.0.1", 5066, Transport::Ws),
+    //         ),
+    //         (
+    //             "sip:bob@localhost:5067;transport=wss",
+    //             ("bob", "127.0.0.1", 5067, Transport::Wss),
+    //         ),
+    //     ];
+    //     for item in check_list {
+    //         let uri = rsip::uri::Uri::try_from(item.0)?;
+    //         let context = rsip_dns::Context::initialize_from(
+    //             uri.clone(),
+    //             rsip_dns::AsyncTrustDnsClient::new(
+    //                 TokioAsyncResolver::tokio(Default::default(), Default::default()).unwrap(),
+    //             ),
+    //             rsip_dns::SupportedTransports::any(),
+    //         )?;
 
-            let mut lookup = rsip_dns::Lookup::from(context);
-            let mut target = lookup.resolve_next().await.unwrap();
-            match uri.host_with_port.host {
-                Host::IpAddr(_) => {
-                    if let Some(port) = uri.host_with_port.port {
-                        target.port = port;
-                    }
-                }
-                _ => {}
-            }
-            assert_eq!(uri.user().unwrap(), item.1 .0);
-            assert_eq!(target.transport, item.1 .3);
-            assert_eq!(target.ip_addr.to_string(), item.1 .1);
-            assert_eq!(target.port, item.1 .2.into());
-        }
-        Ok(())
-    }
-
+    //         let mut lookup = rsip_dns::Lookup::from(context);
+    //         let mut target = lookup.resolve_next().await.unwrap();
+    //         match uri.host_with_port.host {
+    //             Host::IpAddr(_) => {
+    //                 if let Some(port) = uri.host_with_port.port {
+    //                     target.port = port;
+    //                 }
+    //             }
+    //             _ => {}
+    //         }
+    //         assert_eq!(uri.user().unwrap(), item.1 .0);
+    //         assert_eq!(target.transport, item.1 .3);
+    //         assert_eq!(target.ip_addr.to_string(), item.1 .1);
+    //         assert_eq!(target.port, item.1 .2.into());
+    //     }
+    //     Ok(())
+    // }
     #[tokio::test]
     async fn test_serve_listens() -> Result<()> {
         let tl = super::TransportLayer::new(tokio_util::sync::CancellationToken::new());

@@ -11,7 +11,7 @@ use crate::{
     Error, Result, VERSION,
 };
 use async_trait::async_trait;
-use rsip::{prelude::HeadersExt, SipMessage};
+use rsip::{prelude::HeadersExt, SipMessage, Transport};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, RwLock},
@@ -512,6 +512,18 @@ impl EndpointInner {
         Ok(rr.into())
     }
 
+    pub fn get_via_tls(&self, branch: Option<rsip::Param>) -> Result<rsip::typed::Via> {
+        let first_addr = self
+            .transport_layer
+            .get_addrs()
+            .iter()
+            .find(|addr| matches!(addr.r#type, Some(Transport::Tls)))
+            .ok_or(Error::EndpointError("no tls sipaddrs".to_string()))
+            .cloned()?;
+
+        self.get_via(Some(first_addr), branch)
+    }
+
     pub fn get_via(
         &self,
         addr: Option<crate::transport::SipAddr>,
@@ -523,7 +535,7 @@ impl EndpointInner {
                 .transport_layer
                 .get_addrs()
                 .first()
-                .ok_or(Error::EndpointError("not sipaddrs".to_string()))
+                .ok_or(Error::EndpointError("no sipaddrs".to_string()))
                 .cloned()?,
         };
 
