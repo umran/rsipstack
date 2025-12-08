@@ -16,7 +16,7 @@ use crate::{
 };
 use rsip::{
     prelude::{HeadersExt, ToTypedHeader},
-    Request, Response, Transport,
+    Request, Response,
 };
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -249,39 +249,16 @@ impl DialogLayer {
         }
         .with_tag(make_tag());
 
-        let via = if let Some(SipAddr {
-            r#type: Some(Transport::Tls),
-            ..
-        }) = opt.destination
-        {
-            self.endpoint.get_via_tls(None)?
-        } else {
-            self.endpoint.get_via(None, None)?
-        };
-
-        let contact_uri = if opt
-            .destination
-            .as_ref()
-            .map(|d| d.r#type == Some(Transport::Tls))
-            .unwrap_or(false)
-        {
-            let host = via.uri.host().to_string();
-            let port = "5061";
-            let s = format!("sip:rustpbx@{}:{};transport=tls", host, port);
-            rsip::Uri::try_from(s).unwrap()
-        } else {
-            opt.contact.clone()
-        };
-
-        let contact = rsip::typed::Contact {
-            display_name: None,
-            uri: contact_uri,
-            params: vec![],
-        };
-
+        let via = self.endpoint.get_via(None, None)?;
         let mut request =
             self.endpoint
                 .make_request(rsip::Method::Invite, recipient, via, from, to, last_seq);
+
+        let contact = rsip::typed::Contact {
+            display_name: None,
+            uri: opt.contact.clone(),
+            params: vec![],
+        };
 
         request
             .headers
